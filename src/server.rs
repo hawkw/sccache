@@ -60,6 +60,8 @@ use tokio_serde_bincode::{ReadBincode, WriteBincode};
 use tokio_service::Service;
 use tokio_tcp::TcpListener;
 use tokio_timer::{Delay, Timeout};
+use tokio_trace::field;
+use tokio_trace_futures::Instrument;
 use util; //::fmt_duration_as_secs;
 
 use errors::*;
@@ -565,7 +567,7 @@ where
     type Future = SFuture<Self::Response>;
 
     fn call(&self, req: Self::Request) -> Self::Future {
-        trace!("handle_client");
+        let mut span = span!("handle_client", kind);
 
         // Opportunistically let channel know that we've received a request. We
         // ignore failures here as well as backpressure as it's not imperative
@@ -574,21 +576,24 @@ where
 
         let res: SFuture<Response> = match req.into_inner() {
             Request::Compile(compile) => {
-                debug!("handle_client: compile");
+                span.record("kind", &field::display("compile"));
                 self.stats.borrow_mut().compile_requests += 1;
-                return self.handle_compile(compile);
+                return Box::new(
+                    self.handle_compile(compile)
+                        .instrument(span)
+                    );
             }
             Request::GetStats => {
-                debug!("handle_client: get_stats");
+                span.record("kind", &field::display("compile"));
                 Box::new(self.get_info().map(Response::Stats))
             }
             Request::ZeroStats => {
-                debug!("handle_client: zero_stats");
+                span.record("kind", &field::display("zero_stats"));
                 self.zero_stats();
                 Box::new(self.get_info().map(Response::Stats))
             }
             Request::Shutdown => {
-                debug!("handle_client: shutdown");
+                span.record("kind", &field::display("shutdown"));
                 let future = self
                     .tx
                     .clone()
@@ -598,12 +603,15 @@ where
                 return Box::new(
                     future
                         .join(info_future)
-                        .map(move |(_, info)| Message::WithoutBody(Response::ShuttingDown(info))),
+                        .map(move |(_, info)| Message::WithoutBody(Response::ShuttingDown(info)))
+                        .instrument(span),
                 );
             }
         };
 
-        Box::new(res.map(Message::WithoutBody))
+        Box::new(res
+            .map(Message::WithoutBody)
+            .instrument(span))
     }
 }
 
